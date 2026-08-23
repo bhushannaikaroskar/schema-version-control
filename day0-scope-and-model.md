@@ -115,3 +115,22 @@ Concrete cases to test against:
 - [item] — because [reason]
 - [item] — because [reason]
 ```
+
+## 6. Merge strategy plan
+
+Two-stage approach:
+
+1. **v1 (must ship):** conservative dual-touch conflict policy from §4. Implement,
+   test all 7 taxonomy cases, done.
+2. **Stretch ("above and beyond"):** property-level auto-merge:
+   - Same element, different properties touched (rename vs retype vs nullability)
+     → both apply cleanly.
+   - Same property, different values (rename→A vs rename→B) → conflict.
+   - Any edit vs drop of the same element → conflict.
+   - Dependency check still applies: adding an index on a column another branch
+     dropped is a conflict even though index and column have different IDs.
+
+The stretch version replaces the ID-overlap check with a per-operation
+"reads/writes" analysis. Ship v1 first; do not start the stretch until the UI
+exists (Day 4), because a brilliant engine nobody can see loses to a good
+engine with a clear diff/merge view.
