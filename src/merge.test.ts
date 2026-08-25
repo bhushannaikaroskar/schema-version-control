@@ -154,6 +154,52 @@ describe("mergeSchemas — conflict taxonomy (day0 doc §4)", () => {
     );
   });
 
+  it("operationsToApply excludes ops whose target ours already wrote (safe for repeated merges)", () => {
+    // Repeated-merge scenario: ours previously merged in (or independently made)
+    // the c2 change; theirs still carries its own copy of it. Both write c2,
+    // so v1 flags dual_touch — but when the changes are IDENTICAL there is
+    // nothing to resolve, so the engine treats same-write-same-content as clean.
+    const sharedOp: Operation = {
+      type: "ADD_COLUMN",
+      column: { id: "c2", tableId: "t1", name: "age", dataType: "integer", nullable: true },
+    };
+
+    // Identical writes of the same element are not a conflict…
+    const identical = mergeSchemas(baseState(), [sharedOp], [{ ...sharedOp }]);
+    expect(identical.status).toBe("clean");
+    expect(identical.operationsToApply).toHaveLength(0);
+
+    // …but different writes of the same element still are.
+    const divergent = mergeSchemas(baseState(), [sharedOp], [
+      { type: "ADD_COLUMN", column: { id: "c2", tableId: "t1", name: "age", dataType: "integer", nullable: false } },
+    ]);
+    expect(divergent.status).toBe("conflict");
+  });
+
+  it("repro: incoming op targeting an element ALREADY IN our schema is dropped (no duplicate columns)", () => {
+    // Scenario from manual testing: test-1 branched from main AFTER main added
+    // c2. main's log still contains ADD_COLUMN c2, but test-1's base snapshot
+    // already includes it. Merging main into test-1 must NOT re-add c2.
+    const mainOps: Operation[] = [
+      {
+        type: "ADD_COLUMN",
+        column: { id: "c2", tableId: "t1", name: "age", dataType: "integer", nullable: true },
+      },
+    ];
+    // test-1's base state already has c2 baked in; its own log is empty.
+    const baseWithC2 = applyOperations(baseState(), mainOps);
+
+    const result = mergeSchemas(baseWithC2, [] /* ours */, mainOps /* theirs */);
+
+    expect(result.status).toBe("clean");
+    expect(result.operationsToApply).toHaveLength(0);
+    // And the schema must contain exactly one "age" column.
+    const ageColumns = Object.values(result.schema?.columns ?? {}).filter(
+      (c) => c.name === "age",
+    );
+    expect(ageColumns).toHaveLength(1);
+  });
+
   it("different columns added to the same table auto-merge (containers don't conflict by themselves)", () => {
     const ours: Operation[] = [
       {

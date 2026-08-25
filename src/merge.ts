@@ -29,8 +29,13 @@ export interface MergeConflict {
 
 export interface MergeResult {
   status: "clean" | "conflict";
-  /** Merged operation list (ours then theirs). Only meaningful when status === "clean". */
+  /** Full merged operation sequence (ours then theirs). Reference only — do NOT
+   *  append this to a branch log; it contains this branch's own ops. */
   operations: Operation[];
+  /** What the caller should append to their branch log: only the INCOMING side's
+   *  operations. Empty when everything from theirs is already applied.
+   *  The engine guarantees appending these can never duplicate elements. */
+  operationsToApply: Operation[];
   /** Schema after applying merged operations to base. Only meaningful when clean. */
   schema?: SchemaState;
   conflicts: MergeConflict[];
@@ -40,6 +45,12 @@ interface OpFootprint {
   writes: Set<ID>;
   reads: Set<ID>;
   containers: Set<ID>;
+}
+
+/** Primary ids an operation creates/mutates/deletes. Exported so the UI can
+ *  deduplicate merges (never append an op whose target is already written). */
+export function opWrites(op: Operation): ID[] {
+  return [...footprint(op).writes];
 }
 
 function footprint(op: Operation): OpFootprint {
@@ -107,8 +118,19 @@ function findConflicts(
   );
 
   // Rule 1: both sides write the same element.
+  // Exception: if the operations are IDENTICAL (same type + payload), there is
+  // nothing to resolve — e.g. both branches added the same column, or one side
+  // already merged in the other's change (repeated merge). Conflict only when
+  // the writes actually diverge.
+  const sameIdOps = (ops: Operation[], id: ID) =>
+    ops.filter((op) => footprint(op).writes.has(id));
+  const hasIdenticalPair = (id: ID) => {
+    const a = sameIdOps(ours, id).map((o) => JSON.stringify(o));
+    const b = new Set(sameIdOps(theirs, id).map((o) => JSON.stringify(o)));
+    return a.some((s) => b.has(s));
+  };
   for (const id of ourWrites) {
-    if (theirWrites.has(id)) {
+    if (theirWrites.has(id) && !hasIdenticalPair(id)) {
       conflicts.push({
         type: "dual_touch",
         message: `Both branches modify element ${id}`,
@@ -185,15 +207,59 @@ export function mergeSchemas(
   const conflicts = findConflicts(ours, theirs);
 
   if (conflicts.length > 0) {
-    return { status: "conflict", operations: [], conflicts };
+    return { status: "conflict", operations: [], operationsToApply: [], conflicts };
   }
 
   // Clean merge: replay both sides' operations over the base. Ours first,
   // then theirs — deterministic, and safe because no footprint overlaps.
   const operations = [...ours, ...theirs];
+
+  // Guard against caller misuse INSIDE the engine: `operations` contains this
+  // branch's own ops (ours), which are already in its log. Appending them again
+  // would duplicate elements. operationsToApply strips anything whose target is
+  // already written by ours — so a naive "log.push(...result.operationsToApply)"
+  // is always safe, even on repeated merges.
+  const ourWrittenIds = new Set(ours.flatMap((op) => [...footprint(op).writes]));
+  const operationsToApply = theirs.filter(
+    (op) => ![...footprint(op).writes].some((id) => ourWrittenIds.has(id)),
+  );
+
+  // Second guard, against a subtler failure: an incoming op may target an id
+  // that ALREADY EXISTS in our current schema (baked in via base snapshot or a
+  // previous merge) even though no op of ours writes it. Re-applying ADD_COLUMN
+  // would append its id to columnIds twice — the "duplicate column" bug.
+  // So we drop any op that is a no-op against our current schema.
+  let schemaAfterOurs = applyOperations(base, ours);
+  const isNoOp = (op: Operation): boolean => {
+    switch (op.type) {
+      case "CREATE_TABLE":
+        return op.table.id in schemaAfterOurs.tables;
+      case "ADD_COLUMN":
+        return op.column.id in schemaAfterOurs.columns;
+      case "ADD_CONSTRAINT":
+        return op.constraint.id in schemaAfterOurs.constraints;
+      case "ADD_INDEX":
+        return op.index.id in schemaAfterOurs.indexes;
+      case "DROP_TABLE":
+        return !(op.tableId in schemaAfterOurs.tables);
+      case "DROP_COLUMN":
+        return !(op.columnId in schemaAfterOurs.columns);
+      case "RENAME_COLUMN":
+        return !(op.columnId in schemaAfterOurs.columns) || schemaAfterOurs.columns[op.columnId].name === op.newName;
+      case "RETYPE_COLUMN":
+        return !(op.columnId in schemaAfterOurs.columns) || schemaAfterOurs.columns[op.columnId].dataType === op.newType;
+      case "DROP_CONSTRAINT":
+        return !(op.constraintId in schemaAfterOurs.constraints);
+      case "DROP_INDEX":
+        return !(op.indexId in schemaAfterOurs.indexes);
+    }
+  };
+  const idempotentOps = operationsToApply.filter((op) => !isNoOp(op));
+
   return {
     status: "clean",
     operations,
+    operationsToApply: idempotentOps,
     schema: applyOperations(base, operations),
     conflicts: [],
   };

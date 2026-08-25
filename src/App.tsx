@@ -110,6 +110,15 @@ export default function App() {
 
   const handleOperation = (op: Operation) => updateBranch(commit(activeBranch, op));
 
+  const handleCreateTable = () => {
+    const name = prompt("Table name:");
+    if (!name?.trim()) return;
+    handleOperation({
+      type: "CREATE_TABLE",
+      table: { id: crypto.randomUUID(), name: name.trim(), columnIds: [] },
+    });
+  };
+
   const diffTarget = project.branches.find((b) => b.id === diffTargetId);
   let changes: SchemaChange[] = [];
   if (diffTarget && diffTarget.id !== activeBranch.id) {
@@ -118,22 +127,23 @@ export default function App() {
 
   let mergeResult: MergeResult | null = null;
   if (diffTarget && diffTarget.id !== activeBranch.id) {
-    // Merging diffTarget INTO activeBranch. Base = shared history is approximated
-    // by the target's base state when it branched from us; for the demo we use
-    // the active branch's base state as the common ancestor.
+    // Merging diffTarget INTO activeBranch: ours = activeBranch, theirs = diffTarget.
+    // Base approximates the shared ancestor (the point activeBranch forked).
     mergeResult = mergeSchemas(
       activeBranch.baseState,
-      diffTarget.operations,
       activeBranch.operations,
+      diffTarget.operations,
     );
   }
 
-  // Applying a clean merge: the merged operations become part of this branch's log.
+  // Applying a clean merge: append only what the engine says is new.
+  // The engine guarantees operationsToApply never duplicates elements,
+  // even across repeated merges — no frontend-side guarding needed.
   const handleApplyMerge = () => {
     if (!mergeResult || mergeResult.status !== "clean") return;
     updateBranch({
       ...activeBranch,
-      operations: [...activeBranch.operations, ...mergeResult.operations],
+      operations: [...activeBranch.operations, ...mergeResult.operationsToApply],
     });
     setDiffTargetId(null);
     setPanel("schema");
@@ -196,7 +206,11 @@ export default function App() {
         </header>
 
         {panel === "schema" && (
-          <SchemaBrowser schema={currentSchema(activeBranch)} onOperate={handleOperation} />
+          <SchemaBrowser
+            schema={currentSchema(activeBranch)}
+            onOperate={handleOperation}
+            onCreateTable={handleCreateTable}
+          />
         )}
         {panel === "diff" && (
           <DiffView changes={changes} fromName={activeBranch.name} toName={diffTarget?.name ?? ""} />

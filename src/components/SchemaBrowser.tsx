@@ -3,29 +3,20 @@ import type { SchemaState, Operation } from "../types.js";
 interface Props {
   schema: SchemaState;
   onOperate: (op: Operation) => void;
+  onCreateTable: () => void;
 }
 
 // The schema browser: tables with their columns. Each column row offers the
 // mutations that make sense for it — rename, retype, drop — so every action
 // a user can take maps 1:1 to an engine operation.
-export function SchemaBrowser({ schema, onOperate }: Props) {
+export function SchemaBrowser({ schema, onOperate, onCreateTable }: Props) {
   const tables = Object.values(schema.tables);
 
   if (tables.length === 0) {
     return (
       <div className="empty-state">
         <p>No tables yet.</p>
-        <button onClick={() => {
-          const name = prompt("Table name:");
-          if (name?.trim()) {
-            onOperate({
-              type: "CREATE_TABLE",
-              table: { id: crypto.randomUUID(), name: name.trim(), columnIds: [] },
-            });
-          }
-        }}>
-          Create your first table
-        </button>
+        <button onClick={onCreateTable}>Create your first table</button>
       </div>
     );
   }
@@ -42,6 +33,7 @@ export function SchemaBrowser({ schema, onOperate }: Props) {
 
   return (
     <div className="schema-browser">
+      <button className="new-table" onClick={onCreateTable}>+ New table</button>
       {tables.map((table) => (
         <section key={table.id} className="table-card">
           <header>
