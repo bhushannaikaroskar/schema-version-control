@@ -12,6 +12,7 @@ import { emptySchema, applyOperations } from "./apply.js";
 import { SchemaBrowser } from "./components/SchemaBrowser.js";
 import { DiffView } from "./components/DiffView.js";
 import { MergeView } from "./components/MergeView.js";
+import { Modal } from "./components/Modal.js";
 
 // ---------------------------------------------------------------------------
 // Demo seed: builds a realistic starting project so the first-run experience
@@ -88,6 +89,7 @@ export default function App() {
   const [project, setProject] = useState<ProjectState>(loadProject);
   const [panel, setPanel] = useState<Panel>("schema");
   const [diffTargetId, setDiffTargetId] = useState<string | null>(null);
+  const [branchDialogOpen, setBranchDialogOpen] = useState(false);
 
   useEffect(() => saveProject(project), [project]);
 
@@ -100,22 +102,18 @@ export default function App() {
       branches: p.branches.map((b) => (b.id === updated.id ? updated : b)),
     }));
 
-  const handleCreateBranch = () => {
-    const name = prompt("Branch name:");
-    if (!name?.trim()) return;
-    const branch = createBranch(name.trim(), currentSchema(activeBranch));
+  const handleCreateBranch = (name: string) => {
+    const branch = createBranch(name, currentSchema(activeBranch));
     setProject((p) => ({ ...p, branches: [...p.branches, branch], activeBranchId: branch.id }));
     setPanel("schema");
   };
 
   const handleOperation = (op: Operation) => updateBranch(commit(activeBranch, op));
 
-  const handleCreateTable = () => {
-    const name = prompt("Table name:");
-    if (!name?.trim()) return;
+  const handleCreateTable = (name: string) => {
     handleOperation({
       type: "CREATE_TABLE",
-      table: { id: crypto.randomUUID(), name: name.trim(), columnIds: [] },
+      table: { id: crypto.randomUUID(), name, columnIds: [] },
     });
   };
 
@@ -164,7 +162,7 @@ export default function App() {
             </button>
           ))}
         </div>
-        <button className="new-branch" onClick={handleCreateBranch}>
+        <button className="new-branch" onClick={() => setBranchDialogOpen(true)}>
           + New branch
         </button>
       </aside>
@@ -223,6 +221,64 @@ export default function App() {
           />
         )}
       </main>
+
+      {branchDialogOpen && (
+        <BranchNameModal
+          branchFromName={activeBranch.name}
+          existingNames={project.branches.map((b) => b.name)}
+          onSubmit={(name) => {
+            handleCreateBranch(name);
+            setBranchDialogOpen(false);
+          }}
+          onClose={() => setBranchDialogOpen(false)}
+        />
+      )}
     </div>
+  );
+}
+
+function BranchNameModal({
+  branchFromName,
+  existingNames,
+  onSubmit,
+  onClose,
+}: {
+  branchFromName: string;
+  existingNames: string[];
+  onSubmit: (name: string) => void;
+  onClose: () => void;
+}) {
+  const [name, setName] = useState("");
+  const trimmed = name.trim();
+  const error =
+    !trimmed
+      ? null
+      : existingNames.includes(trimmed)
+        ? "A branch with this name already exists"
+        : null;
+
+  return (
+    <Modal title="New branch" onClose={onClose}>
+      <form
+        className="modal-form"
+        onSubmit={(e) => {
+          e.preventDefault();
+          if (trimmed && !error) onSubmit(trimmed);
+        }}
+      >
+        <p className="form-hint">
+          Branches from the current schema of <strong>{branchFromName}</strong>.
+        </p>
+        <label>
+          Branch name
+          <input autoFocus value={name} onChange={(e) => setName(e.target.value)} placeholder="e.g. feature/add-auth" />
+        </label>
+        {error && <p className="form-error">{error}</p>}
+        <div className="modal-actions">
+          <button type="button" onClick={onClose}>Cancel</button>
+          <button type="submit" className="primary" disabled={!trimmed || !!error}>Create branch</button>
+        </div>
+      </form>
+    </Modal>
   );
 }
